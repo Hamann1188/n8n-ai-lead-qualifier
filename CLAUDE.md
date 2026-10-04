@@ -65,10 +65,9 @@ Each step is one commit; tick it off in Status.
 ## Status
 
 - [x] Target architecture and CLAUDE.md (2026-10-01)
-- [ ] 1 Infrastructure (2026-10-04):
+- [x] 1 Infrastructure (2026-10-04):
   - compose with n8n 2.41.6 and PostgreSQL 17, the `leadq` uv project, CI, 5 tests;
-  - n8n is reachable at localhost:5678, and the schema survived `down`/`up`: 142 tables, 275 migrations, no re-migration;
-  - pending: the owner account, created by the owner in the browser, and a persistence re-check with it.
+  - n8n is reachable at localhost:5678. The owner account (created by the owner in the browser) and the schema survived `down`/`up`.
 - [ ] 2 Prompt and eval
 - [ ] 3 Main workflow
 - [ ] 4 Credentials guide
