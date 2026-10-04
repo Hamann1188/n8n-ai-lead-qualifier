@@ -82,6 +82,6 @@ Each step is one commit; tick it off in Status.
   - done: "Lead intake" (webhook → build request → Claude → parse → respond + hot → Telegram + Google Sheets upsert + Gmail draft), `leadq.n8n` sync/deploy, `send_test_leads`, 60 tests including the Code nodes in Node.js;
   - live check: webhook auth (403 without and with a wrong secret); hot, warm and spam leads qualified through n8n in 6–9 s; the hot-lead alert arrived in the Telegram group. With the Google nodes disabled the rest still runs (executions 5–6);
   - pending: a live check of the sheet rows and Gmail drafts once the owner has the Google credentials (step 4).
-- [ ] 4 Credentials guide
+- [ ] 4 Credentials guide (2026-10-04), partly done: `docs/setup-credentials.md` written; pending: the owner follows the Google part, then a live check (deploy without "stays disabled" notes, sheet rows, Gmail drafts)
 - [ ] 5 Error workflow
 - [ ] 6 README and video
