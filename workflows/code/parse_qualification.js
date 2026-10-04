@@ -33,6 +33,43 @@ if (q.tier !== 'spam' && !(q.suggested_reply ?? '').trim()) {
 }
 
 const contact = [q.name, q.email, q.phone].filter(Boolean).join(' · ') || 'no contact details';
+const email = (q.email ?? '').trim().toLowerCase();
+const phoneDigits = (q.phone ?? '').replace(/\D/g, '');
+// Repeat leads update their row instead of adding one (ARCHITECTURE ADR-9).
+const contact_key = email || (phoneDigits ? `+${phoneDigits}` : lead.lead_id);
+
+const REPLY_SUBJECTS = {
+  ru: 'Registan Smile Clinic: ответ на вашу заявку',
+  uz: "Registan Smile Clinic: so'rovingizga javob",
+  en: 'Registan Smile Clinic: reply to your request',
+};
+const reply_subject = lead.subject
+  ? `Re: ${lead.subject}`
+  : REPLY_SUBJECTS[q.language] ?? REPLY_SUBJECTS.en;
+const draft = Boolean(email) && q.tier !== 'spam';
+
+const sheet_row = {
+  received_at: lead.received_at.slice(0, 16).replace('T', ' '),
+  lead_id: lead.lead_id,
+  tier: q.tier,
+  lead_score: q.lead_score,
+  name: q.name ?? '',
+  email: q.email ?? '',
+  phone: q.phone ?? '',
+  company: q.company ?? '',
+  language: q.language,
+  service_interest: q.service_interest,
+  urgency: q.urgency,
+  budget_signal: q.budget_signal ?? '',
+  summary: q.summary,
+  score_reasons: (q.score_reasons ?? []).join('; '),
+  suggested_reply: q.suggested_reply,
+  reply_draft: draft ? 'Gmail draft' : '',
+  status: 'new',
+  source: SOURCES[lead.source],
+  message: lead.message,
+  contact_key,
+};
 const telegram_text = [
   `🔥 Hot lead · score ${q.lead_score}`,
   contact,
@@ -49,6 +86,9 @@ return {
     message: lead.message,
     ...q,
     telegram_text,
+    reply_subject,
+    draft,
+    sheet_row,
     usage: response.usage ?? null,
   },
 };

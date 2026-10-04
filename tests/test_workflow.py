@@ -21,11 +21,16 @@ from leadq.n8n import (
     CODE_NODES,
     CREDENTIAL_IDS,
     END_OF_CONSTANTS,
+    GOOGLE_NODES,
     ROOT,
+    SHEET_ID_PLACEHOLDER,
     credentials,
     dump_workflow,
+    google_credentials,
+    import_via_stdin,
     load_workflow,
     node_code,
+    parse_credential_rows,
     rendered,
     synced,
 )
@@ -57,8 +62,12 @@ def test_connections_form_the_intended_pipeline():
     assert targets("Lead webhook") == [["Build Claude request"]]
     assert targets("Build Claude request") == [["Qualify with Claude"]]
     assert targets("Qualify with Claude") == [["Parse qualification"]]
-    assert targets("Parse qualification") == [["Respond to caller", "Is it hot?"]]
+    assert targets("Parse qualification") == [
+        ["Respond to caller", "Is it hot?", "Sheet row", "Needs a reply draft?"]
+    ]
     assert targets("Is it hot?") == [["Alert sales in Telegram"], []]
+    assert targets("Sheet row") == [["Log to Google Sheets"]]
+    assert targets("Needs a reply draft?") == [["Draft reply in Gmail"], []]
     every_target = {t for name in WORKFLOW["connections"] for out in targets(name) for t in out}
     assert every_target <= set(NODES)
 
@@ -93,9 +102,38 @@ def test_no_secrets_or_real_ids_in_the_committed_workflow():
         assert header not in nodes
     assert "-100" not in json.dumps(NODES["Alert sales in Telegram"])  # no real chat id
     refs = {
-        cred["id"] for node in WORKFLOW["nodes"] for cred in node.get("credentials", {}).values()
+        cred["id"]
+        for node in WORKFLOW["nodes"]
+        if node["name"] not in GOOGLE_NODES
+        for cred in node.get("credentials", {}).values()
     }
     assert refs == set(CREDENTIAL_IDS.values())
+    # Google credentials and the spreadsheet belong to the owner; deploy fills them in.
+    assert NODES["Log to Google Sheets"]["credentials"] == {
+        "googleSheetsOAuth2Api": {"id": "GOOGLE_SHEETS_CREDENTIAL", "name": "Google Sheets"}
+    }
+    assert NODES["Draft reply in Gmail"]["credentials"] == {
+        "gmailOAuth2": {"id": "GMAIL_CREDENTIAL", "name": "Gmail"}
+    }
+    sheet = NODES["Log to Google Sheets"]["parameters"]
+    assert sheet["documentId"]["value"] == SHEET_ID_PLACEHOLDER
+
+
+def test_sheet_upserts_by_contact_and_gmail_only_drafts():
+    sheet = NODES["Log to Google Sheets"]["parameters"]
+    assert sheet["operation"] == "appendOrUpdate"
+    assert sheet["columns"]["mappingMode"] == "autoMapInputData"
+    assert sheet["columns"]["matchingColumns"] == ["contact_key"]
+    gmail = NODES["Draft reply in Gmail"]["parameters"]
+    assert (gmail["resource"], gmail["operation"]) == ("draft", "create")
+    assert gmail["options"]["sendTo"] == "={{ $json.email }}"
+    # Nothing in the workflow sends email to a lead.
+    assert not [n for n in WORKFLOW["nodes"] if "emailSend" in n["type"]]
+    assert all(
+        n["parameters"].get("operation") != "send"
+        for n in WORKFLOW["nodes"]
+        if n["type"] == "n8n-nodes-base.gmail"
+    )
 
 
 # --- deploy rendering ----------------------------------------------------------------
@@ -105,11 +143,83 @@ def settings(**values) -> Settings:
     return Settings(_env_file=None, **values)
 
 
+GOOGLE = {
+    "googleSheetsOAuth2Api": ("aB3dE5fG7hJ9kL1m", "Google Sheets account"),
+    "gmailOAuth2": ("nP2qR4sT6uV8wX0y", "Gmail account"),
+}
+
+
+def by_name(workflow: dict) -> dict:
+    return {node["name"]: node for node in workflow["nodes"]}
+
+
 def test_rendered_workflow_gets_the_chat_id():
-    deployed = rendered(WORKFLOW, -5168295738)
-    chat = next(n for n in deployed["nodes"] if n["name"] == "Alert sales in Telegram")
+    deployed, _ = rendered(WORKFLOW, -5168295738)
+    chat = by_name(deployed)["Alert sales in Telegram"]
     assert chat["parameters"]["chatId"] == "-5168295738"
     assert NODES["Alert sales in Telegram"]["parameters"]["chatId"] == CHAT_ID_PLACEHOLDER
+
+
+def test_rendered_workflow_disables_google_nodes_until_set_up():
+    deployed, disabled = rendered(WORKFLOW, -1)
+    assert disabled == ["Log to Google Sheets", "Draft reply in Gmail"]
+    nodes = by_name(deployed)
+    assert all(nodes[name].get("disabled") is True for name in disabled)
+    assert not any(node.get("disabled") for name, node in nodes.items() if name not in disabled)
+
+    # The sheet needs the spreadsheet id too; Gmail only needs its credential.
+    _, disabled = rendered(WORKFLOW, -1, GOOGLE)
+    assert disabled == ["Log to Google Sheets"]
+    _, disabled = rendered(WORKFLOW, -1, {"googleSheetsOAuth2Api": GOOGLE["googleSheetsOAuth2Api"]})
+    assert disabled == ["Log to Google Sheets", "Draft reply in Gmail"]
+
+
+def test_rendered_workflow_gets_the_google_credentials_and_sheet():
+    deployed, disabled = rendered(WORKFLOW, -1, GOOGLE, "1AbCdEfGhIjKlMnOpQrStUvWxYz")
+    assert disabled == []
+    nodes = by_name(deployed)
+    sheet = nodes["Log to Google Sheets"]
+    assert "disabled" not in sheet
+    assert sheet["parameters"]["documentId"]["value"] == "1AbCdEfGhIjKlMnOpQrStUvWxYz"
+    assert sheet["credentials"] == {
+        "googleSheetsOAuth2Api": {"id": "aB3dE5fG7hJ9kL1m", "name": "Google Sheets account"}
+    }
+    assert nodes["Draft reply in Gmail"]["credentials"] == {
+        "gmailOAuth2": {"id": "nP2qR4sT6uV8wX0y", "name": "Gmail account"}
+    }
+    # The committed workflow is untouched.
+    assert NODES["Log to Google Sheets"]["parameters"]["documentId"]["value"] == "GOOGLE_SHEET_ID"
+
+
+def test_credential_rows_keep_the_newest_of_each_google_type():
+    output = (
+        "gmailOAuth2,old1,Gmail old\n"
+        "googleSheetsOAuth2Api,s1,Sheets, with a comma\n"
+        "httpHeaderAuth,leadqWebhookAuth,Lead webhook secret\n"
+        "gmailOAuth2,new2,Gmail account\n"
+        "\n"
+    )
+    assert parse_credential_rows(output) == {
+        "gmailOAuth2": ("new2", "Gmail account"),
+        "googleSheetsOAuth2Api": ("s1", "Sheets, with a comma"),
+    }
+
+
+def test_container_scripts_have_no_dollar_signs(monkeypatch):
+    # Through `wsl --` the WSL shell expands `$` before the container sees it.
+    calls = []
+    monkeypatch.setattr(
+        "leadq.n8n.compose", lambda _s, *args, stdin=None: calls.append((args, stdin)) or ""
+    )
+    import_via_stdin(settings(), "workflow", [{"name": "x"}])
+    google_credentials(settings())
+    (import_args, _), (psql_args, sql) = calls
+    assert import_args[-1].startswith("cat > /tmp/leadq-workflow.json && n8n import:workflow")
+    assert import_args[-1].endswith("|| { rm -f /tmp/leadq-workflow.json; exit 1; }")
+    assert psql_args[:4] == ("exec", "-T", "db", "psql")
+    for text in (*import_args, *psql_args):
+        assert "$" not in text
+    assert "credentials_entity" in sql
 
 
 def test_credentials_from_settings():
@@ -268,8 +378,32 @@ def claude_response(data=None, stop_reason="end_turn", text=None) -> dict:
     return {"content": content, "stop_reason": stop_reason, "usage": {"input_tokens": 1}}
 
 
-def parse(response: dict) -> dict:
-    return run_code("Parse qualification", response, {"Build Claude request": {"lead": LEAD}})
+def parse(response: dict, lead: dict = LEAD) -> dict:
+    return run_code("Parse qualification", response, {"Build Claude request": {"lead": lead}})
+
+
+SHEET_COLUMNS = [
+    "received_at",
+    "lead_id",
+    "tier",
+    "lead_score",
+    "name",
+    "email",
+    "phone",
+    "company",
+    "language",
+    "service_interest",
+    "urgency",
+    "budget_signal",
+    "summary",
+    "score_reasons",
+    "suggested_reply",
+    "reply_draft",
+    "status",
+    "source",
+    "message",
+    "contact_key",
+]
 
 
 @needs_node
@@ -285,6 +419,65 @@ def test_js_parses_a_hot_lead_and_writes_the_alert():
         "Wants an implant consultation this week.",
         "Source: website form · L7",
     ]
+
+
+@needs_node
+def test_js_builds_the_sheet_row_and_the_draft():
+    item = parse(claude_response(qualification()))["result"]["json"]
+    assert item["draft"] is True
+    assert item["reply_subject"] == "Registan Smile Clinic: reply to your request"
+    row = item["sheet_row"]
+    assert list(row) == SHEET_COLUMNS
+    assert row == {
+        "received_at": "2026-10-12 10:15",
+        "lead_id": "L7",
+        "tier": "hot",
+        "lead_score": 92,
+        "name": "Sarah Collins",
+        "email": "sarah@example.com",
+        "phone": "+998908112233",
+        "company": "",
+        "language": "en",
+        "service_interest": "dental implant",
+        "urgency": "high",
+        "budget_signal": "",
+        "summary": "Wants an implant consultation this week.",
+        "score_reasons": "wants it this week",
+        "suggested_reply": "Hello Sarah ... Registan Smile Clinic",
+        "reply_draft": "Gmail draft",
+        "status": "new",
+        "source": "website form",
+        "message": "Hi",
+        "contact_key": "sarah@example.com",
+    }
+    # The Sheet row node passes exactly these columns on.
+    assert run_code("Sheet row", item) == {"ok": True, "result": {"json": row}}
+
+
+@needs_node
+@pytest.mark.parametrize(
+    ("overrides", "contact_key", "draft"),
+    [
+        ({"email": "  Sarah@Example.COM "}, "sarah@example.com", True),
+        ({"email": None, "phone": "+998 (90) 811-22-33"}, "+998908112233", False),
+        ({"email": None, "phone": None}, "L7", False),
+        ({"tier": "spam", "lead_score": 2, "suggested_reply": ""}, "sarah@example.com", False),
+    ],
+)
+def test_js_contact_key_and_draft(overrides, contact_key, draft):
+    item = parse(claude_response(qualification(**overrides)))["result"]["json"]
+    assert (item["sheet_row"]["contact_key"], item["draft"]) == (contact_key, draft)
+    assert item["sheet_row"]["reply_draft"] == ("Gmail draft" if draft else "")
+
+
+@needs_node
+def test_js_reply_subject_follows_the_lead():
+    by_email = parse(claude_response(qualification()), LEAD | {"subject": "Implant price"})
+    assert by_email["result"]["json"]["reply_subject"] == "Re: Implant price"
+    russian = parse(claude_response(qualification(language="ru")))
+    assert russian["result"]["json"]["reply_subject"] == (
+        "Registan Smile Clinic: ответ на вашу заявку"
+    )
 
 
 @needs_node

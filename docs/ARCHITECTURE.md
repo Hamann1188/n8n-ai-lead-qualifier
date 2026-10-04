@@ -27,10 +27,11 @@ flowchart LR
   F[Website form → webhook<br/>X-Webhook-Secret] --> N[Normalize + build request]
   M[Email bridge, optional] --> N
   N --> Q[Claude: qualify<br/>HTTP Request, structured output]
-  Q --> S[Append row to Google Sheets]
+  Q --> S[Google Sheets: append,<br/>or update by contact]
   Q --> R{tier = hot?}
   R -- yes --> T[Telegram alert to sales chat]
-  Q --> G[Gmail draft with suggested reply]
+  Q --> D{email and not spam?}
+  D -- yes --> G[Gmail draft with suggested reply]
   E[Error Trigger] --> TA[Telegram alert]
 ```
 
@@ -40,7 +41,7 @@ flowchart LR
 |---|---|
 | `docker-compose.yml` | n8n 2.41.6 (pinned) + PostgreSQL 17 for n8n state |
 | `workflows/lead-intake.json` | Main workflow, without credentials or the chat id |
-| `workflows/code/*.js` | Source of the Code nodes (`build_request.js`, `parse_qualification.js`) |
+| `workflows/code/*.js` | Source of the Code nodes (`build_request.js`, `parse_qualification.js`, `sheet_row.js`) |
 | `workflows/error-alert.json` | Error workflow (step 5) |
 | `prompts/qualify.md` | System prompt (source of truth) |
 | `schemas/lead.schema.json` | Output JSON schema (source of truth) |
@@ -50,21 +51,27 @@ flowchart LR
 | `evals/leads.yaml` · `src/leadq/eval.py` | Labelled leads → tier accuracy and JSON validity, using the same prompt, schema and model |
 | `docs/setup-credentials.md` | Step by step: Anthropic key, Telegram bot, Google OAuth (Sheets + Gmail) |
 
-**Workflow "Lead intake"** (built 2026-10-04): Lead webhook → Build Claude request → Qualify with Claude → Parse qualification, which feeds two branches:
+**Workflow "Lead intake"** (built 2026-10-04): Lead webhook → Build Claude request → Qualify with Claude → Parse qualification, which feeds four branches:
 - Respond to caller;
-- Is it hot? → Alert sales in Telegram.
+- Is it hot? → Alert sales in Telegram;
+- Sheet row → Log to Google Sheets;
+- Needs a reply draft? → Draft reply in Gmail.
 
 | Node | Type (version) | What it does |
 |---|---|---|
 | Lead webhook | Webhook (2.1) | `POST /webhook/lead-intake`; Header Auth credential checks `X-Webhook-Secret` (403 otherwise); answers from the respond node |
 | Build Claude request | Code (2), per item | Trims the fields: 200 characters each, the message 5,000. An unknown `source` becomes `form`. Assigns `lead_id = L<execution id>` and builds the same body as `leadq.qualify.build_request` |
 | Qualify with Claude | HTTP Request (4.2) | `POST /v1/messages` with the "Anthropic API key" Header Auth credential (`x-api-key`) and `anthropic-version: 2023-06-01`; 90 s timeout; 3 tries, 3 s apart |
-| Parse qualification | Code (2), per item | The checks of `leadq.qualify.parse_response`; throws on refusal, `max_tokens`, a missing text block, bad JSON, an unknown tier, a score outside the tier's range, or a missing reply. Builds the Telegram text |
+| Parse qualification | Code (2), per item | The checks of `leadq.qualify.parse_response`; throws on refusal, `max_tokens`, a missing text block, bad JSON, an unknown tier, a score outside the tier's range, or a missing reply. Builds the Telegram text, the sheet row, the contact key (ADR-9), the reply subject and the `draft` flag |
 | Respond to caller | Respond to Webhook (1.4) | `{ok, lead_id, tier, lead_score, language}`: callers are trusted servers holding the secret |
 | Is it hot? | If (2.2) | `tier == "hot"` |
 | Alert sales in Telegram | Telegram (1.2) | Plain text to the sales group; no "sent with n8n" footer |
+| Sheet row | Code (2), per item | Passes on exactly the sheet columns (section 5), in order |
+| Log to Google Sheets | Google Sheets (4.7) | Append or update, matched on `contact_key`, columns mapped by name; on an empty sheet the node writes the header row itself |
+| Needs a reply draft? | If (2.2) | `draft`: the lead gave an email and isn't spam |
+| Draft reply in Gmail | Gmail (2.2) | Creates a draft (never sends) to the lead's email: `Re: <subject>` for email leads, otherwise a clinic subject in the lead's language; the body is `suggested_reply` |
 
-The respond node sits above the If node, so with execution order v1 the caller gets the answer before the Telegram alert is sent.
+The respond node sits above the other branches, so with execution order v1 the caller gets the answer before the Telegram alert, the sheet and the draft.
 
 ## 4. Claude step
 
@@ -92,12 +99,13 @@ The respond node sits above the If node, so with execution order v1 the caller g
 
 ## 5. Data
 
-- **Google Sheet "Leads":** one row per lead with:
-  - received at, source;
-  - name, email, phone, company, language;
-  - service interest, urgency, score, tier, summary;
-  - status (`new`), draft link.
-- **Duplicates:** the same email or phone within 30 days updates the existing row instead of adding a new one.
+- **Google Sheet "Leads":** the first tab of a spreadsheet the owner creates empty; one row per contact, with these columns in order:
+  - `received_at` (Tashkent time), `lead_id`, `tier`, `lead_score`;
+  - `name`, `email`, `phone`, `company`, `language`;
+  - `service_interest`, `urgency`, `budget_signal`, `summary`, `score_reasons`, `suggested_reply`;
+  - `reply_draft` ("Gmail draft" when one was created), `status` (`new`, for the sales team to change), `source`, `message`;
+  - `contact_key`: the lower-cased email, else `+` and the phone digits, else the lead id.
+- **Duplicates:** a lead with the same `contact_key` updates the existing row (latest message and qualification) instead of adding a new one. There is no time window: the sheet is a list of contacts, not of submissions.
 
 ## 6. Security
 
@@ -139,12 +147,13 @@ Scores cluster by tier: hot 85–95, warm 45–55, cold 12–28, spam 0–2.
 - `wsl -d Ubuntu -- docker compose up -d` → n8n at http://localhost:5678.
 - `python -m leadq.n8n deploy` (ADR-8) runs these steps:
   1. imports the credentials from `.env` through stdin: the webhook secret, the Anthropic key and the Telegram bot token. n8n encrypts them with `N8N_ENCRYPTION_KEY`, and nothing is printed or written to the host disk;
-  2. substitutes the Telegram chat id;
+  2. substitutes the Telegram chat id and the spreadsheet id (`LEADQ_GOOGLE_SHEET_ID`), and looks up the Google credentials the owner created in the n8n UI (ADR-10). A Google node whose credential or spreadsheet is missing is imported disabled, and deploy says why;
   3. imports the workflow;
   4. runs `n8n publish:workflow`;
   5. restarts n8n so the production webhook is registered.
 
   Re-running it updates everything in place: credentials and the workflow keep fixed ids.
+- Google OAuth apps in "Testing" mode issue refresh tokens that expire after 7 days. For a demo, sign in again in the n8n credential; for a client, publish the OAuth app (`docs/setup-credentials.md`).
 - `python -m leadq.send_test_leads` checks the live webhook. A request without the secret, or with a wrong one, must get 403. Then labelled leads are sent and their tiers checked.
 - Workflow changes made in the UI are exported back to `workflows/` (`n8n export:workflow --id=leadqLeadIntake1`). Code changes go into `workflows/code/*.js` and `sync`, never into the Code node in the UI.
 
@@ -161,6 +170,7 @@ Scores cluster by tier: hot 85–95, warm 45–55, cold 12–28, spam 0–2.
 | ADR-7 | Code-node JavaScript lives in `workflows/code/*.js`, with constants (model, prompt, schema, tier ranges) generated from the Python sources | The prompt and schema have one source of truth. The JS runs under Node.js in the tests, which assert that it builds a request identical to the evaluated Python request and that it rejects every bad answer. So the eval result holds for the workflow. Trade-off: two implementations of the lead message, kept equal by the tests |
 | ADR-8 | Deploy with the n8n CLI (`import:credentials`, `import:workflow`, `publish:workflow`) inside the container, instead of clicking through the UI or using the REST API | One repeatable command, and no extra n8n API key. Secrets go from `.env` straight into n8n's encrypted store. Trade-off: needs shell access to the container and a restart to register webhooks |
 | ADR-9 | Duplicates are handled by the Google Sheets step (append or update by email or phone), not by a separate check before Claude | A returning lead with a new message deserves re-qualification, so a duplicate updates its row instead of being dropped. Trade-off: a double-submitted form costs a second Claude call (about $0.016) |
+| ADR-10 | Google credentials are created in the n8n UI (OAuth sign-in), not imported; deploy finds them by type in n8n's database and keeps a Google node disabled until its credential and the spreadsheet id exist | OAuth needs a browser consent, so these can't come from `.env` like the other secrets. Disabled nodes let the rest of the workflow run (and be demoed) before Google is set up. Trade-off: deploy reads n8n's `credentials_entity` table (ids, names and types only), which ties it to n8n's schema |
 
 ## 10. Extensions (offer as add-ons)
 

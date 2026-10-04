@@ -1,4 +1,4 @@
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     # and the chat id into the workflow; neither is committed.
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: int | None = None
+
+    # The Leads spreadsheet: the id from its URL, docs.google.com/spreadsheets/d/<id>/edit
+    google_sheet_id: str | None = None
+
+    # The n8n database, shared with docker-compose.yml (no LEADQ_ prefix).
+    postgres_user: str = Field("n8n", validation_alias="POSTGRES_USER")
+    postgres_db: str = Field("n8n", validation_alias="POSTGRES_DB")
 
     # How to reach Docker Compose from this machine, e.g. "wsl -d Ubuntu -- docker compose".
     compose_command: str = "docker compose"

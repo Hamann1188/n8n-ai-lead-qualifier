@@ -6,8 +6,10 @@
 `sync` writes the generated constants (model, prompt, schema, tier ranges) plus
 workflows/code/*.js into the workflow's Code nodes; `--check` fails when the committed
 workflow is out of date (CI). `deploy` imports the credentials from .env (n8n encrypts
-them; nothing is printed), fills in the Telegram chat id, imports and publishes the
-workflow and restarts n8n so the production webhook is registered.
+them; nothing is printed), fills in the Telegram chat id, the spreadsheet id and the
+Google credentials the owner signed in with in the n8n UI (Google nodes stay disabled
+until those exist), imports and publishes the workflow and restarts n8n so the
+production webhook is registered.
 """
 
 import argparse
@@ -44,6 +46,15 @@ CODE_NODES = {
         ("MODEL", "MAX_TOKENS", "EFFORT", "SOURCES", "SYSTEM_PROMPT", "OUTPUT_SCHEMA"),
     ),
     "Parse qualification": ("parse_qualification.js", ("SOURCES", "TIER_RANGES")),
+    "Sheet row": ("sheet_row.js", ()),
+}
+
+SHEET_ID_PLACEHOLDER = "GOOGLE_SHEET_ID"
+# Google credentials are created by the owner in the n8n UI (OAuth sign-in happens
+# there); deploy finds them by type. Node name -> credential type.
+GOOGLE_NODES = {
+    "Log to Google Sheets": "googleSheetsOAuth2Api",
+    "Draft reply in Gmail": "gmailOAuth2",
 }
 
 # Credential ids the workflow refers to; deploy creates them with these ids.
@@ -155,14 +166,37 @@ def credentials(settings: Settings) -> list[dict]:
     return result
 
 
-def rendered(workflow: dict, chat_id: int | None) -> dict:
-    """The workflow as deployed: synced, with the real Telegram chat id."""
+def rendered(
+    workflow: dict,
+    chat_id: int | None,
+    google_credentials: dict[str, tuple[str, str]] | None = None,
+    sheet_id: str | None = None,
+) -> tuple[dict, list[str]]:
+    """The workflow as deployed, and the names of nodes left disabled.
+
+    Fills in the Telegram chat id, the spreadsheet id and the ids of the owner's Google
+    credentials (type -> (id, name)). Google nodes whose credential or spreadsheet isn't
+    set up yet are disabled: n8n skips a disabled node, so the rest keeps working.
+    """
     result = synced(workflow)
-    if chat_id is not None:
-        for node in result["nodes"]:
-            if node["parameters"].get("chatId") == CHAT_ID_PLACEHOLDER:
-                node["parameters"]["chatId"] = str(chat_id)
-    return result
+    google_credentials = google_credentials or {}
+    disabled = []
+    for node in result["nodes"]:
+        params = node["parameters"]
+        if chat_id is not None and params.get("chatId") == CHAT_ID_PLACEHOLDER:
+            params["chatId"] = str(chat_id)
+        if node["name"] in GOOGLE_NODES:
+            credential_type = GOOGLE_NODES[node["name"]]
+            found = google_credentials.get(credential_type)
+            needs_sheet = params.get("documentId", {}).get("value") == SHEET_ID_PLACEHOLDER
+            if found is None or (needs_sheet and not sheet_id):
+                node["disabled"] = True
+                disabled.append(node["name"])
+                continue
+            node["credentials"][credential_type] = {"id": found[0], "name": found[1]}
+            if needs_sheet:
+                params["documentId"]["value"] = sheet_id
+    return result, disabled
 
 
 def compose(settings: Settings, *args: str, stdin: str | None = None) -> str:
@@ -184,10 +218,51 @@ def compose(settings: Settings, *args: str, stdin: str | None = None) -> str:
 
 
 def import_via_stdin(settings: Settings, kind: str, payload: object) -> str:
-    """Copy JSON into the container through stdin (never onto the host disk) and import it."""
+    """Copy JSON into the container through stdin (never onto the host disk) and import it.
+
+    The script has no `$`: through `wsl --`, the WSL shell would expand it first.
+    """
     path = f"/tmp/leadq-{kind}.json"
-    script = f"cat > {path} && n8n import:{kind} --input={path}; s=$?; rm -f {path}; exit $s"
+    script = (
+        f"cat > {path} && n8n import:{kind} --input={path} && rm -f {path} "
+        f"|| {{ rm -f {path}; exit 1; }}"
+    )
     return compose(settings, "exec", "-T", "n8n", "sh", "-c", script, stdin=json.dumps(payload))
+
+
+def parse_credential_rows(output: str) -> dict[str, tuple[str, str]]:
+    """psql `-tA -F ,` rows of `type,id,name`, oldest first -> type -> (id, name) of the newest."""
+    found: dict[str, tuple[str, str]] = {}
+    for line in output.splitlines():
+        parts = line.strip().split(",", 2)
+        if len(parts) == 3 and parts[0] in GOOGLE_NODES.values():
+            found[parts[0]] = (parts[1], parts[2])
+    return found
+
+
+def google_credentials(settings: Settings) -> dict[str, tuple[str, str]]:
+    """The Google credentials the owner created in the n8n UI: type -> (id, name)."""
+    types = ", ".join(f"'{t}'" for t in GOOGLE_NODES.values())
+    sql = (
+        f"SELECT type, id, name FROM credentials_entity WHERE type IN ({types}) "
+        'ORDER BY "updatedAt";'
+    )
+    output = compose(
+        settings,
+        "exec",
+        "-T",
+        "db",
+        "psql",
+        "-U",
+        settings.postgres_user,
+        "-d",
+        settings.postgres_db,
+        "-tA",
+        "-F",
+        ",",
+        stdin=sql,
+    )
+    return parse_credential_rows(output)
 
 
 def wait_healthy(settings: Settings, timeout_s: float = 120) -> None:
@@ -211,7 +286,17 @@ def deploy() -> int:
             "note: LEADQ_TELEGRAM_BOT_TOKEN or LEADQ_TELEGRAM_CHAT_ID is not set; "
             "hot-lead alerts will fail until both are in .env"
         )
-    workflow = rendered(load_workflow(), settings.telegram_chat_id)
+    google = google_credentials(settings)
+    workflow, disabled = rendered(
+        load_workflow(), settings.telegram_chat_id, google, settings.google_sheet_id
+    )
+    for name in disabled:
+        reason = (
+            f"no {GOOGLE_NODES[name]} credential in n8n"
+            if GOOGLE_NODES[name] not in google
+            else "LEADQ_GOOGLE_SHEET_ID is not set"
+        )
+        print(f"note: '{name}' stays disabled: {reason} (docs/setup-credentials.md)")
 
     print(f"importing {len(creds)} credentials ({', '.join(c['name'] for c in creds)})")
     import_via_stdin(settings, "credentials", creds)

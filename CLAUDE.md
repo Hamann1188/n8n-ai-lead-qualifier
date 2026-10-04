@@ -46,7 +46,9 @@ tests/
 
 - `prompts/qualify.md`, `schemas/lead.schema.json` and `workflows/code/*.js` are the only source of truth. Edit them, then run `python -m leadq.n8n sync`. Never hand-edit the Code nodes inside the workflow JSON or in the n8n UI.
 - A change to how the lead message or request is built must be made in both `leadq/qualify.py` and `workflows/code/build_request.js`. `tests/test_workflow.py` fails if they differ, but only when Node.js is available (CI, or `LEADQ_NODE_COMMAND`).
-- The committed workflow keeps `TELEGRAM_CHAT_ID` as a placeholder; deploy fills it in from `.env`. Credentials are referenced by fixed ids (`leadqWebhookAuth`, `leadqAnthropicKy`, `leadqTelegramBot`).
+- The committed workflow keeps the placeholders `TELEGRAM_CHAT_ID`, `GOOGLE_SHEET_ID`, `GOOGLE_SHEETS_CREDENTIAL` and `GMAIL_CREDENTIAL`; deploy fills them in. Credentials from `.env` are referenced by fixed ids (`leadqWebhookAuth`, `leadqAnthropicKy`, `leadqTelegramBot`).
+- The Google credentials can't come from `.env`: the owner creates them in the n8n UI ("Google Sheets OAuth2 API", "Gmail OAuth2 API", Sign in with Google). Deploy finds them by type in n8n's `credentials_entity` table and keeps the Google nodes disabled until they and `LEADQ_GOOGLE_SHEET_ID` exist (ADR-10).
+- Commands that go through `wsl -d Ubuntu -- ...` must not contain `$`: the WSL shell expands it before the container sees it (a test enforces this for deploy).
 - Exported workflows must contain no secrets. Check every export with `git diff` before committing.
 - The Claude call uses structured outputs (`output_config.format`) and explicit effort `low`; it never sends forced `tool_choice` or disables thinking. Read the `text` block by type, not `content[0]`.
 - The tooling creates the Claude client only through `leadq.llm.make_client`, with explicit `api_key` and `base_url` from settings (prefix `LEADQ_`), never from `ANTHROPIC_*` environment variables (see `../CLAUDE.md`, Headroom).
@@ -77,9 +79,9 @@ Each step is one commit; tick it off in Status.
   - 100% on every metric, exact tier 40/40, $0.016 per lead. I read every output;
   - the prompt was not tuned on the set.
 - [ ] 3 Main workflow (2026-10-04), partly done:
-  - done: "Lead intake" (webhook → build request → Claude → parse → respond + hot → Telegram), `leadq.n8n` sync/deploy, `send_test_leads`, 49 tests including the Code nodes in Node.js;
-  - live check: webhook auth (403 without and with a wrong secret), warm and spam leads qualified through n8n in 6–9 s, both executions successful;
-  - pending: the Telegram bot token in `.env` and a hot-lead alert check; Google Sheets and the Gmail draft after the Google credentials (step 4).
+  - done: "Lead intake" (webhook → build request → Claude → parse → respond + hot → Telegram + Google Sheets upsert + Gmail draft), `leadq.n8n` sync/deploy, `send_test_leads`, 60 tests including the Code nodes in Node.js;
+  - live check: webhook auth (403 without and with a wrong secret); hot, warm and spam leads qualified through n8n in 6–9 s; the hot-lead alert arrived in the Telegram group. With the Google nodes disabled the rest still runs (executions 5–6);
+  - pending: a live check of the sheet rows and Gmail drafts once the owner has the Google credentials (step 4).
 - [ ] 4 Credentials guide
 - [ ] 5 Error workflow
 - [ ] 6 README and video
