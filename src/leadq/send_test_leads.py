@@ -80,8 +80,10 @@ def main() -> int:
         ok = status == 200 and body.get("ok") is True and tier in (lead.tier, *lead.alt)
         failures += not ok
         detail = f"{tier} {body.get('lead_score')}" if status == 200 else f"HTTP {status} {body}"
-        print(f"{'ok ' if ok else 'BAD'} {lead.id:<26} expected {lead.tier:<5} got {detail} "
-              f"({seconds:.1f} s, {body.get('lead_id', '-')})")
+        print(
+            f"{'ok ' if ok else 'BAD'} {lead.id:<26} expected {lead.tier:<5} got {detail} "
+            f"({seconds:.1f} s, {body.get('lead_id', '-')})"
+        )
     print("PASS" if not failures else f"FAIL: {failures} problem(s)")
     return 1 if failures else 0
 
