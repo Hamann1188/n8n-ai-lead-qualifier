@@ -36,7 +36,7 @@ tests/
 | Export workflows | `wsl -d Ubuntu -- docker compose exec n8n n8n export:workflow --all --separate --output=/workflows` |
 | Sync prompt and schema into the workflow | `uv run python -m leadq.sync_workflow` (CI: `--check`) |
 | Send test leads | `uv run python -m leadq.send_test_leads` |
-| Eval (real API, costs money) | `uv run python -m leadq.eval` |
+| Eval (real API, about $0.65) | `uv run python -m leadq.eval [--only id,id]`: 40 leads; writes `evals/results/latest.md` (committed) and `latest.jsonl` (ignored); exits 1 if a target is missed. Ask the owner before running: it spends their balance |
 | n8n database state (counts only) | `docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'` |
 | Lint / tests | `uv run ruff check .` · `uv run pytest` |
 
@@ -68,7 +68,10 @@ Each step is one commit; tick it off in Status.
 - [x] 1 Infrastructure (2026-10-04):
   - compose with n8n 2.41.6 and PostgreSQL 17, the `leadq` uv project, CI, 5 tests;
   - n8n is reachable at localhost:5678. The owner account (created by the owner in the browser) and the schema survived `down`/`up`.
-- [ ] 2 Prompt and eval
+- [x] 2 Prompt and eval (2026-10-04):
+  - `prompts/qualify.md`, `schemas/lead.schema.json`, `leadq/qualify.py` (request builder, parsing, validation), `evals/leads.yaml` (40 leads), `leadq/eval.py`;
+  - 100% on every metric, exact tier 40/40, $0.016 per lead. I read every output;
+  - the prompt was not tuned on the set.
 - [ ] 3 Main workflow
 - [ ] 4 Credentials guide
 - [ ] 5 Error workflow
