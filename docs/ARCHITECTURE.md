@@ -41,8 +41,8 @@ flowchart LR
 |---|---|
 | `docker-compose.yml` | n8n 2.41.6 (pinned) + PostgreSQL 17 for n8n state |
 | `workflows/lead-intake.json` | Main workflow, without credentials or the chat id |
-| `workflows/code/*.js` | Source of the Code nodes (`build_request.js`, `parse_qualification.js`, `sheet_row.js`) |
-| `workflows/error-alert.json` | Error workflow (step 5) |
+| `workflows/code/*.js` | Source of the Code nodes (`build_request.js`, `parse_qualification.js`, `sheet_row.js`, `error_alert.js`) |
+| `workflows/error-alert.json` | Error workflow: any failed "Lead intake" run → Telegram alert with the step, the error, a hint and a link to the execution |
 | `prompts/qualify.md` | System prompt (source of truth) |
 | `schemas/lead.schema.json` | Output JSON schema (source of truth) |
 | `src/leadq/qualify.py` | The request builder, parser and validator used by the eval; the Code nodes mirror it |
@@ -72,6 +72,22 @@ flowchart LR
 | Draft reply in Gmail | Gmail (2.2) | Creates a draft (never sends) to the lead's email: `Re: <subject>` for email leads, otherwise a clinic subject in the lead's language; the body is `suggested_reply` |
 
 The respond node sits above the other branches, so with execution order v1 the caller gets the answer before the Telegram alert, the sheet and the draft.
+
+Both Telegram nodes send HTML, and the code escapes `&`, `<` and `>` in every value (ADR-11).
+
+**Workflow "Error alert"** (built 2026-10-04): "Lead intake" names it in its settings (`errorWorkflow`), so n8n runs it for every failed production run of "Lead intake".
+
+| Node | Type (version) | What it does |
+|---|---|---|
+| Error Trigger | Error Trigger (1) | Receives the failed workflow, the last node run, the error and the execution link; for a failed trigger node the details come under `trigger` instead |
+| Format alert | Code (2), per item | Bold headline, step, error (cut at 600 characters), a hint for each known step (wrong Anthropic key, failed checks, Telegram chat, expired Google sign-in), the execution link, and "after the fix, open it and choose Retry" |
+| Alert team in Telegram | Telegram (1.2) | The same bot and sales group as the hot-lead alert |
+
+What a failure looks like from outside:
+- before "Respond to caller" (Claude unreachable, the answer fails the checks): the caller gets HTTP 500 `{"message":"Error in workflow"}`, and the team gets the alert;
+- after it (Telegram, Sheets, Gmail): the caller already has its 200, and the team gets the alert.
+
+Either way n8n keeps the failed execution with the lead's data, so nothing is lost: after the fix, **Retry** in the execution list runs it again from the failed node.
 
 ## 4. Claude step
 
@@ -148,12 +164,14 @@ Scores cluster by tier: hot 85–95, warm 45–55, cold 12–28, spam 0–2.
 - `python -m leadq.n8n deploy` (ADR-8) runs these steps:
   1. imports the credentials from `.env` through stdin: the webhook secret, the Anthropic key and the Telegram bot token. n8n encrypts them with `N8N_ENCRYPTION_KEY`, and nothing is printed or written to the host disk;
   2. substitutes the Telegram chat id and the spreadsheet id (`LEADQ_GOOGLE_SHEET_ID`), and looks up the Google credentials the owner created in the n8n UI (ADR-10). A Google node whose credential or spreadsheet is missing is imported disabled, and deploy says why;
-  3. imports the workflow;
-  4. runs `n8n publish:workflow`;
+  3. imports both workflows, "Error alert" first;
+  4. runs `n8n publish:workflow` for both. n8n 2.41 won't run an unpublished error workflow ("is not active and cannot be executed"), although its docs say an Error Trigger workflow needn't be published;
   5. restarts n8n so the production webhook is registered.
 
   Re-running it updates everything in place: credentials and the workflow keep fixed ids.
 - Google OAuth apps in "Testing" mode issue refresh tokens that expire after 7 days. For a demo, sign in again in the n8n credential; for a client, publish the OAuth app (`docs/setup-credentials.md`).
+- Checking the error alert (done 2026-10-04): import an "Anthropic API key" credential with a wrong key, post a lead, see the alert in Telegram, then `deploy` again to restore the key. A wrong key costs nothing (401). Error workflows don't run for manual executions in the editor, so the test must go through the webhook.
+- A repeated lead creates another Gmail draft, even if its sheet row is only updated: each message gets a reply, and people delete the extra drafts.
 - `python -m leadq.send_test_leads` checks the live webhook. A request without the secret, or with a wrong one, must get 403. Then labelled leads are sent and their tiers checked.
 - Workflow changes made in the UI are exported back to `workflows/` (`n8n export:workflow --id=leadqLeadIntake1`). Code changes go into `workflows/code/*.js` and `sync`, never into the Code node in the UI.
 
@@ -171,6 +189,7 @@ Scores cluster by tier: hot 85–95, warm 45–55, cold 12–28, spam 0–2.
 | ADR-8 | Deploy with the n8n CLI (`import:credentials`, `import:workflow`, `publish:workflow`) inside the container, instead of clicking through the UI or using the REST API | One repeatable command, and no extra n8n API key. Secrets go from `.env` straight into n8n's encrypted store. Trade-off: needs shell access to the container and a restart to register webhooks |
 | ADR-9 | Duplicates are handled by the Google Sheets step (append or update by email or phone), not by a separate check before Claude | A returning lead with a new message deserves re-qualification, so a duplicate updates its row instead of being dropped. Trade-off: a double-submitted form costs a second Claude call (about $0.016) |
 | ADR-10 | Google credentials are created in the n8n UI (OAuth sign-in), not imported; deploy finds them by type in n8n's database and keeps a Google node disabled until its credential and the spreadsheet id exist | OAuth needs a browser consent, so these can't come from `.env` like the other secrets. Disabled nodes let the rest of the workflow run (and be demoed) before Google is set up. Trade-off: deploy reads n8n's `credentials_entity` table (ids, names and types only), which ties it to n8n's schema |
+| ADR-11 | Telegram messages are HTML with every value escaped, set explicitly on both Telegram nodes | Without a `parse_mode` the n8n Telegram node sends legacy Markdown. Then a `_` or `*` in a lead's name or text, or in an error message such as `LEADQ_ANTHROPIC_API_KEY`, makes Telegram reject the message with 400 "can't parse entities" (seen live on the first error alert). In HTML only `&`, `<` and `>` need escaping. Trade-off: none worth noting |
 
 ## 10. Extensions (offer as add-ons)
 

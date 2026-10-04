@@ -1,15 +1,15 @@
-"""Keep the n8n workflow in step with the repo, and deploy it to the local n8n.
+"""Keep the n8n workflows in step with the repo, and deploy them to the local n8n.
 
     uv run python -m leadq.n8n sync [--check]   # embed prompt, schema and code in the JSON
-    uv run python -m leadq.n8n deploy           # credentials + workflow into n8n, published
+    uv run python -m leadq.n8n deploy           # credentials + workflows into n8n, published
 
 `sync` writes the generated constants (model, prompt, schema, tier ranges) plus
-workflows/code/*.js into the workflow's Code nodes; `--check` fails when the committed
+workflows/code/*.js into the workflows' Code nodes; `--check` fails when the committed
 workflow is out of date (CI). `deploy` imports the credentials from .env (n8n encrypts
 them; nothing is printed), fills in the Telegram chat id, the spreadsheet id and the
 Google credentials the owner signed in with in the n8n UI (Google nodes stay disabled
-until those exist), imports and publishes the workflow and restarts n8n so the
-production webhook is registered.
+until those exist), imports and publishes both workflows ("Error alert" and "Lead
+intake") and restarts n8n so the production webhook is registered.
 """
 
 import argparse
@@ -34,8 +34,12 @@ from leadq.qualify import (
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_FILE = ROOT / "workflows" / "lead-intake.json"
+ERROR_WORKFLOW_FILE = ROOT / "workflows" / "error-alert.json"
+# Import order: the error workflow first, so the id "Lead intake" names already exists.
+WORKFLOW_FILES = (ERROR_WORKFLOW_FILE, WORKFLOW_FILE)
 CODE_DIR = ROOT / "workflows" / "code"
 WORKFLOW_ID = "leadqLeadIntake1"
+ERROR_WORKFLOW_ID = "leadqErrorAlert1"
 CHAT_ID_PLACEHOLDER = "TELEGRAM_CHAT_ID"
 END_OF_CONSTANTS = "// --- end of generated constants ---"
 
@@ -47,6 +51,7 @@ CODE_NODES = {
     ),
     "Parse qualification": ("parse_qualification.js", ("SOURCES", "TIER_RANGES")),
     "Sheet row": ("sheet_row.js", ()),
+    "Format alert": ("error_alert.js", ()),
 }
 
 SHEET_ID_PLACEHOLDER = "GOOGLE_SHEET_ID"
@@ -101,25 +106,30 @@ def dump_workflow(workflow: dict) -> str:
 
 
 def synced(workflow: dict) -> dict:
+    """The workflow with fresh code in each of its Code nodes listed in CODE_NODES."""
     result = json.loads(json.dumps(workflow))
-    by_name = {node["name"]: node for node in result["nodes"]}
-    for name in CODE_NODES:
-        by_name[name]["parameters"]["jsCode"] = node_code(name)
+    for node in result["nodes"]:
+        if node["name"] in CODE_NODES:
+            node["parameters"]["jsCode"] = node_code(node["name"])
     return result
 
 
 def sync(check: bool) -> int:
-    current = WORKFLOW_FILE.read_text(encoding="utf-8")
-    expected = dump_workflow(synced(json.loads(current)))
-    if current == expected:
-        print("workflow is in sync")
-        return 0
-    if check:
-        print(f"{WORKFLOW_FILE.relative_to(ROOT)} is out of date: run `python -m leadq.n8n sync`")
-        return 1
-    WORKFLOW_FILE.write_text(expected, encoding="utf-8", newline="\n")
-    print(f"updated {WORKFLOW_FILE.relative_to(ROOT)}")
-    return 0
+    stale = []
+    for path in WORKFLOW_FILES:
+        current = path.read_text(encoding="utf-8")
+        expected = dump_workflow(synced(json.loads(current)))
+        if current == expected:
+            continue
+        stale.append(path)
+        if check:
+            print(f"{path.relative_to(ROOT)} is out of date: run `python -m leadq.n8n sync`")
+        else:
+            path.write_text(expected, encoding="utf-8", newline="\n")
+            print(f"updated {path.relative_to(ROOT)}")
+    if not stale:
+        print("workflows are in sync")
+    return 1 if check and stale else 0
 
 
 # --- deploy --------------------------------------------------------------------------
@@ -287,9 +297,13 @@ def deploy() -> int:
             "hot-lead alerts will fail until both are in .env"
         )
     google = google_credentials(settings)
-    workflow, disabled = rendered(
-        load_workflow(), settings.telegram_chat_id, google, settings.google_sheet_id
-    )
+    workflows, disabled = [], []
+    for path in WORKFLOW_FILES:
+        workflow, off = rendered(
+            load_workflow(path), settings.telegram_chat_id, google, settings.google_sheet_id
+        )
+        workflows.append(workflow)
+        disabled += off
     for name in disabled:
         reason = (
             f"no {GOOGLE_NODES[name]} credential in n8n"
@@ -300,10 +314,13 @@ def deploy() -> int:
 
     print(f"importing {len(creds)} credentials ({', '.join(c['name'] for c in creds)})")
     import_via_stdin(settings, "credentials", creds)
-    print(f"importing workflow {workflow['name']!r}")
-    import_via_stdin(settings, "workflow", [workflow])
-    print("publishing")
-    compose(settings, "exec", "-T", "n8n", "n8n", "publish:workflow", f"--id={WORKFLOW_ID}")
+    print(f"importing workflows {', '.join(repr(w['name']) for w in workflows)}")
+    import_via_stdin(settings, "workflow", workflows)
+    # Both are published: n8n 2.41 refuses to run an unpublished error workflow
+    # ("is not active and cannot be executed"), although its docs say it needn't be.
+    for workflow in workflows:
+        print(f"publishing {workflow['name']!r}")
+        compose(settings, "exec", "-T", "n8n", "n8n", "publish:workflow", f"--id={workflow['id']}")
     print("restarting n8n to register the production webhook")
     compose(settings, "restart", "n8n")
     wait_healthy(settings)
@@ -314,7 +331,7 @@ def deploy() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    sync_parser = sub.add_parser("sync", help="embed prompt, schema and code in the workflow")
+    sync_parser = sub.add_parser("sync", help="embed prompt, schema and code in the workflows")
     sync_parser.add_argument("--check", action="store_true", help="fail if out of date")
     sub.add_parser("deploy", help="import credentials and the workflow into n8n")
     args = parser.parse_args()

@@ -70,11 +70,15 @@ const sheet_row = {
   message: lead.message,
   contact_key,
 };
+// The Telegram node sends HTML (n8n would default to Markdown, which a `_` or `*` in the
+// lead's text breaks), so every value is escaped.
+const html = (value) =>
+  String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const telegram_text = [
-  `🔥 Hot lead · score ${q.lead_score}`,
-  contact,
-  `Service: ${q.service_interest} · urgency: ${q.urgency}`,
-  q.summary,
+  `<b>🔥 Hot lead · score ${q.lead_score}</b>`,
+  html(contact),
+  `Service: ${html(q.service_interest)} · urgency: ${html(q.urgency)}`,
+  html(q.summary),
   `Source: ${SOURCES[lead.source]} · ${lead.lead_id}`,
 ].join('\n');
 

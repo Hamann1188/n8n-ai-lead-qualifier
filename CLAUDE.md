@@ -49,6 +49,9 @@ tests/
 - The committed workflow keeps the placeholders `TELEGRAM_CHAT_ID`, `GOOGLE_SHEET_ID`, `GOOGLE_SHEETS_CREDENTIAL` and `GMAIL_CREDENTIAL`; deploy fills them in. Credentials from `.env` are referenced by fixed ids (`leadqWebhookAuth`, `leadqAnthropicKy`, `leadqTelegramBot`).
 - The Google credentials can't come from `.env`: the owner creates them in the n8n UI ("Google Sheets OAuth2 API", "Gmail OAuth2 API", Sign in with Google). Deploy finds them by type in n8n's `credentials_entity` table and keeps the Google nodes disabled until they and `LEADQ_GOOGLE_SHEET_ID` exist (ADR-10).
 - Commands that go through `wsl -d Ubuntu -- ...` must not contain `$`: the WSL shell expands it before the container sees it (a test enforces this for deploy).
+- Every Telegram node sets `parse_mode: HTML`, and the code escapes `&`, `<` and `>` in every value it puts into a message (ADR-11). Without it n8n sends Markdown, and lead text breaks it.
+- Keep both workflows published: n8n 2.41 won't run an unpublished error workflow. The error workflow only fires for production (webhook) runs, so test it through the webhook, not the editor.
+- Never rewrite repo files with PowerShell 5.1 `Get-Content`/`Set-Content`: it reads UTF-8 without a BOM as cp1251 and corrupts every non-ASCII character. Use the Edit tool or Python.
 - Exported workflows must contain no secrets. Check every export with `git diff` before committing.
 - The Claude call uses structured outputs (`output_config.format`) and explicit effort `low`; it never sends forced `tool_choice` or disables thinking. Read the `text` block by type, not `content[0]`.
 - The tooling creates the Claude client only through `leadq.llm.make_client`, with explicit `api_key` and `base_url` from settings (prefix `LEADQ_`), never from `ANTHROPIC_*` environment variables (see `../CLAUDE.md`, Headroom).
@@ -78,10 +81,13 @@ Each step is one commit; tick it off in Status.
   - `prompts/qualify.md`, `schemas/lead.schema.json`, `leadq/qualify.py` (request builder, parsing, validation), `evals/leads.yaml` (40 leads), `leadq/eval.py`;
   - 100% on every metric, exact tier 40/40, $0.016 per lead. I read every output;
   - the prompt was not tuned on the set.
-- [ ] 3 Main workflow (2026-10-04), partly done:
-  - done: "Lead intake" (webhook → build request → Claude → parse → respond + hot → Telegram + Google Sheets upsert + Gmail draft), `leadq.n8n` sync/deploy, `send_test_leads`, 60 tests including the Code nodes in Node.js;
-  - live check: webhook auth (403 without and with a wrong secret); hot, warm and spam leads qualified through n8n in 6–9 s; the hot-lead alert arrived in the Telegram group. With the Google nodes disabled the rest still runs (executions 5–6);
-  - pending: a live check of the sheet rows and Gmail drafts once the owner has the Google credentials (step 4).
-- [ ] 4 Credentials guide (2026-10-04), partly done: `docs/setup-credentials.md` written; pending: the owner follows the Google part, then a live check (deploy without "stays disabled" notes, sheet rows, Gmail drafts)
-- [ ] 5 Error workflow
+- [x] 3 Main workflow (2026-10-04):
+  - "Lead intake": webhook → build request → Claude → parse → respond, plus three branches: hot → Telegram, Google Sheets upsert by `contact_key`, Gmail draft. Also `leadq.n8n` sync/deploy, `send_test_leads`, 60 tests including the Code nodes in Node.js;
+  - live check: webhook auth (403 without and with a wrong secret); hot, warm, cold and spam leads qualified through n8n in 6–14 s; the hot-lead alert arrived in the Telegram group. With the Google nodes disabled, the rest still ran (executions 5–6);
+  - live check with Google (executions 7–12, all successful; the owner confirmed the sheet and Gmail): the header row was created on the empty sheet; 6 leads made 5 rows, because the repeated lead updated its row; 3 drafts were created, one per lead with an email; the email lead's draft got "Re: <subject>".
+- [x] 4 Credentials guide (2026-10-04): `docs/setup-credentials.md`. The owner followed the Google part from it (project, 3 APIs, consent screen, OAuth client, two n8n credentials, sheet id), and deploy then enabled both Google nodes
+- [x] 5 Error workflow (2026-10-04):
+  - "Error alert" (Error Trigger → Format alert → Telegram); "Lead intake" names it as its error workflow; deploy imports and publishes both; 74 tests;
+  - live check: with a wrong Anthropic key the webhook answered 500 and the alert run succeeded (executions 16–17); the real key was restored and checked (execution 18);
+  - found on the way: n8n 2.41 only runs a published error workflow, and the Telegram node defaults to Markdown, which broke on the `_` in a hint. Both Telegram nodes now send escaped HTML (ADR-11).
 - [ ] 6 README and video
