@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # setup-uv publishes only full version tags (no floating major tag since v8)
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.20"
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # Job logs need repo admin rights to download, so the summary and every failure
+      # are also published as annotations, which the public API returns.
+      - name: pytest
+        shell: bash
+        run: |
+          set +e
+          uv run pytest -rfEs | tee pytest.log
+          status=${PIPESTATUS[0]}
+          echo "::notice title=pytest::$(tail -n 1 pytest.log)"
+          grep -E "^(FAILED|ERROR) " pytest.log | head -n 20 | while IFS= read -r line; do
+            echo "::error title=pytest::${line}"
+          done
+          exit "$status"

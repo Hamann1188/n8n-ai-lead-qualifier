@@ -18,10 +18,10 @@ n8n (Docker, pinned version) + PostgreSQL 17 for n8n state; Claude Messages API 
 ## Layout
 
 ```
-workflows/   lead-intake.json · error-alert.json   (exported, no credentials)
+workflows/   lead-intake.json · error-alert.json   (exported, no credentials; bind-mounted at /workflows)
 prompts/     qualify.md            (source of truth)
 schemas/     lead.schema.json      (source of truth)
-tools/       sync_workflow.py · send_test_leads.py · eval.py
+src/leadq/   config.py · llm.py · sync_workflow.py · send_test_leads.py · eval.py   (Python tooling)
 evals/       leads.yaml · results/
 docs/        ARCHITECTURE.md · setup-credentials.md
 tests/
@@ -34,9 +34,10 @@ tests/
 | Start n8n | `wsl -d Ubuntu -- docker compose up -d` → http://localhost:5678 |
 | Import workflows | `wsl -d Ubuntu -- docker compose exec n8n n8n import:workflow --separate --input=/workflows` |
 | Export workflows | `wsl -d Ubuntu -- docker compose exec n8n n8n export:workflow --all --separate --output=/workflows` |
-| Sync prompt and schema into the workflow | `uv run python tools/sync_workflow.py` (CI: `--check`) |
-| Send test leads | `uv run python tools/send_test_leads.py` |
-| Eval (real API, costs money) | `uv run python tools/eval.py` |
+| Sync prompt and schema into the workflow | `uv run python -m leadq.sync_workflow` (CI: `--check`) |
+| Send test leads | `uv run python -m leadq.send_test_leads` |
+| Eval (real API, costs money) | `uv run python -m leadq.eval` |
+| n8n database state (counts only) | `docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'` |
 | Lint / tests | `uv run ruff check .` · `uv run pytest` |
 
 ## Repo rules
@@ -44,7 +45,9 @@ tests/
 - `prompts/qualify.md` and `schemas/lead.schema.json` are the only source of truth. Edit them, then run `sync_workflow.py`; never hand-edit the prompt inside the workflow JSON.
 - Exported workflows must contain no secrets. Check every export with `git diff` before committing.
 - The Claude call uses structured outputs (`output_config.format`) and explicit effort `low`; it never sends forced `tool_choice` or disables thinking. Read the `text` block by type, not `content[0]`.
-- `tools/eval.py` creates the client with explicit `api_key` and `base_url` from settings (prefix `LEADQ_`), never from `ANTHROPIC_*` environment variables (see `../CLAUDE.md`, Headroom).
+- The tooling creates the Claude client only through `leadq.llm.make_client`, with explicit `api_key` and `base_url` from settings (prefix `LEADQ_`), never from `ANTHROPIC_*` environment variables (see `../CLAUDE.md`, Headroom).
+- `.env` was created on 2026-10-04 with random `N8N_ENCRYPTION_KEY`, `POSTGRES_PASSWORD` and `LEADQ_WEBHOOK_SECRET` (never printed). Never change `N8N_ENCRYPTION_KEY`: the stored n8n credentials would become unreadable. The owner adds `LEADQ_ANTHROPIC_API_KEY` themselves.
+- n8n is pinned to `n8nio/n8n:2.41.6`, which was `stable` on 2026-10-04, and runs on PostgreSQL 17 with no host port. Only n8n is published, at 127.0.0.1:5678. Nodes can't read environment variables (`N8N_BLOCK_ENV_ACCESS_IN_NODE=true`), so secrets go into n8n credentials.
 - n8n node versions change between releases. Build or adjust nodes in the n8n UI and export the result. Hand-written workflow JSON is only a starting point and must be imported and opened in the UI before commit.
 - Replies are drafts only; never add a node that sends email to a lead automatically.
 
@@ -62,7 +65,10 @@ Each step is one commit; tick it off in Status.
 ## Status
 
 - [x] Target architecture and CLAUDE.md (2026-10-01)
-- [ ] 1 Infrastructure
+- [ ] 1 Infrastructure (2026-10-04):
+  - compose with n8n 2.41.6 and PostgreSQL 17, the `leadq` uv project, CI, 5 tests;
+  - n8n is reachable at localhost:5678, and the schema survived `down`/`up`: 142 tables, 275 migrations, no re-migration;
+  - pending: the owner account, created by the owner in the browser, and a persistence re-check with it.
 - [ ] 2 Prompt and eval
 - [ ] 3 Main workflow
 - [ ] 4 Credentials guide

@@ -1,0 +1,37 @@
+[project]
+name = "n8n-ai-lead-qualifier"
+version = "0.1.0"
+description = "n8n + Claude workflow that qualifies inbound leads, logs them to Google Sheets and alerts hot leads in Telegram."
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=1.0",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.20,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "leadq"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "ASYNC", "RUF"]
+# Multilingual project: Cyrillic in strings is intended, not a Latin look-alike
+ignore = ["RUF001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
