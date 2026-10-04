@@ -34,15 +34,19 @@ tests/
 | Start n8n | `wsl -d Ubuntu -- docker compose up -d` → http://localhost:5678 |
 | Import workflows | `wsl -d Ubuntu -- docker compose exec n8n n8n import:workflow --separate --input=/workflows` |
 | Export workflows | `wsl -d Ubuntu -- docker compose exec n8n n8n export:workflow --all --separate --output=/workflows` |
-| Sync prompt and schema into the workflow | `uv run python -m leadq.sync_workflow` (CI: `--check`) |
-| Send test leads | `uv run python -m leadq.send_test_leads` |
+| Sync prompt, schema and code into the workflow | `uv run python -m leadq.n8n sync` (CI: `--check`) |
+| Deploy credentials + workflow into n8n | `uv run python -m leadq.n8n deploy` (reads `.env`, prints no secrets, restarts n8n) |
+| Send test leads (real Claude calls) | `uv run python -m leadq.send_test_leads [--only id,id \| --all]` |
+| Code-node tests locally (Node.js from the n8n container) | `$env:LEADQ_NODE_COMMAND = "wsl -d Ubuntu -- docker compose exec -T n8n node"; uv run pytest` |
 | Eval (real API, about $0.65) | `uv run python -m leadq.eval [--only id,id]`: 40 leads; writes `evals/results/latest.md` (committed) and `latest.jsonl` (ignored); exits 1 if a target is missed. Ask the owner before running: it spends their balance |
 | n8n database state (counts only) | `docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'` |
 | Lint / tests | `uv run ruff check .` · `uv run pytest` |
 
 ## Repo rules
 
-- `prompts/qualify.md` and `schemas/lead.schema.json` are the only source of truth. Edit them, then run `sync_workflow.py`; never hand-edit the prompt inside the workflow JSON.
+- `prompts/qualify.md`, `schemas/lead.schema.json` and `workflows/code/*.js` are the only source of truth. Edit them, then run `python -m leadq.n8n sync`. Never hand-edit the Code nodes inside the workflow JSON or in the n8n UI.
+- A change to how the lead message or request is built must be made in both `leadq/qualify.py` and `workflows/code/build_request.js`. `tests/test_workflow.py` fails if they differ, but only when Node.js is available (CI, or `LEADQ_NODE_COMMAND`).
+- The committed workflow keeps `TELEGRAM_CHAT_ID` as a placeholder; deploy fills it in from `.env`. Credentials are referenced by fixed ids (`leadqWebhookAuth`, `leadqAnthropicKy`, `leadqTelegramBot`).
 - Exported workflows must contain no secrets. Check every export with `git diff` before committing.
 - The Claude call uses structured outputs (`output_config.format`) and explicit effort `low`; it never sends forced `tool_choice` or disables thinking. Read the `text` block by type, not `content[0]`.
 - The tooling creates the Claude client only through `leadq.llm.make_client`, with explicit `api_key` and `base_url` from settings (prefix `LEADQ_`), never from `ANTHROPIC_*` environment variables (see `../CLAUDE.md`, Headroom).
@@ -72,7 +76,10 @@ Each step is one commit; tick it off in Status.
   - `prompts/qualify.md`, `schemas/lead.schema.json`, `leadq/qualify.py` (request builder, parsing, validation), `evals/leads.yaml` (40 leads), `leadq/eval.py`;
   - 100% on every metric, exact tier 40/40, $0.016 per lead. I read every output;
   - the prompt was not tuned on the set.
-- [ ] 3 Main workflow
+- [ ] 3 Main workflow (2026-10-04), partly done:
+  - done: "Lead intake" (webhook → build request → Claude → parse → respond + hot → Telegram), `leadq.n8n` sync/deploy, `send_test_leads`, 49 tests including the Code nodes in Node.js;
+  - live check: webhook auth (403 without and with a wrong secret), warm and spam leads qualified through n8n in 6–9 s, both executions successful;
+  - pending: the Telegram bot token in `.env` and a hot-lead alert check; Google Sheets and the Gmail draft after the Google credentials (step 4).
 - [ ] 4 Credentials guide
 - [ ] 5 Error workflow
 - [ ] 6 README and video

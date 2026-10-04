@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PROMPT_FILE = ROOT / "prompts" / "qualify.md"
 SCHEMA_FILE = ROOT / "schemas" / "lead.schema.json"
 
+MODEL = "claude-opus-5-5"  # what the n8n workflow sends; the eval defaults to it too
 MAX_TOKENS = 4000  # thinking (always on for Claude Opus 5.5) plus the JSON
 EFFORT = "low"  # classification and extraction
 # Score ranges per tier, as the prompt defines them.

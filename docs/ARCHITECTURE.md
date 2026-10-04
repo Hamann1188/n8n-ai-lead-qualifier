@@ -24,10 +24,9 @@ Inbound requests arrive from a website form and by email. Staff read each one, g
 
 ```mermaid
 flowchart LR
-  F[n8n Form / website webhook] --> N[Normalize]
-  M[Gmail trigger, optional] --> N
-  N --> D{Duplicate?}
-  D -- new --> Q[Claude: qualify<br/>HTTP Request, structured output]
+  F[Website form → webhook<br/>X-Webhook-Secret] --> N[Normalize + build request]
+  M[Email bridge, optional] --> N
+  N --> Q[Claude: qualify<br/>HTTP Request, structured output]
   Q --> S[Append row to Google Sheets]
   Q --> R{tier = hot?}
   R -- yes --> T[Telegram alert to sales chat]
@@ -39,15 +38,33 @@ flowchart LR
 
 | Path | Purpose |
 |---|---|
-| `docker-compose.yml` | n8n (pinned image version) + PostgreSQL for n8n state |
-| `workflows/lead-intake.json` | Main workflow, exported without credentials |
-| `workflows/error-alert.json` | Error workflow |
+| `docker-compose.yml` | n8n 2.41.6 (pinned) + PostgreSQL 17 for n8n state |
+| `workflows/lead-intake.json` | Main workflow, without credentials or the chat id |
+| `workflows/code/*.js` | Source of the Code nodes (`build_request.js`, `parse_qualification.js`) |
+| `workflows/error-alert.json` | Error workflow (step 5) |
 | `prompts/qualify.md` | System prompt (source of truth) |
 | `schemas/lead.schema.json` | Output JSON schema (source of truth) |
-| `tools/sync_workflow.py` | Writes prompt + schema into the workflow JSON; `--check` mode fails CI if they drift |
-| `tools/send_test_leads.py` | Posts synthetic leads to the webhook |
-| `evals/leads.yaml` · `tools/eval.py` | Labelled leads → tier accuracy and JSON validity, using the same prompt, schema and model |
+| `src/leadq/qualify.py` | The request builder, parser and validator used by the eval; the Code nodes mirror it |
+| `src/leadq/n8n.py` | `sync [--check]` embeds the constants and code in the workflow JSON (CI fails on drift); `deploy` imports credentials and the workflow and publishes it |
+| `src/leadq/send_test_leads.py` | Posts labelled leads to the live webhook and checks auth and tiers |
+| `evals/leads.yaml` · `src/leadq/eval.py` | Labelled leads → tier accuracy and JSON validity, using the same prompt, schema and model |
 | `docs/setup-credentials.md` | Step by step: Anthropic key, Telegram bot, Google OAuth (Sheets + Gmail) |
+
+**Workflow "Lead intake"** (built 2026-10-04): Lead webhook → Build Claude request → Qualify with Claude → Parse qualification, which feeds two branches:
+- Respond to caller;
+- Is it hot? → Alert sales in Telegram.
+
+| Node | Type (version) | What it does |
+|---|---|---|
+| Lead webhook | Webhook (2.1) | `POST /webhook/lead-intake`; Header Auth credential checks `X-Webhook-Secret` (403 otherwise); answers from the respond node |
+| Build Claude request | Code (2), per item | Trims the fields: 200 characters each, the message 5,000. An unknown `source` becomes `form`. Assigns `lead_id = L<execution id>` and builds the same body as `leadq.qualify.build_request` |
+| Qualify with Claude | HTTP Request (4.2) | `POST /v1/messages` with the "Anthropic API key" Header Auth credential (`x-api-key`) and `anthropic-version: 2023-06-01`; 90 s timeout; 3 tries, 3 s apart |
+| Parse qualification | Code (2), per item | The checks of `leadq.qualify.parse_response`; throws on refusal, `max_tokens`, a missing text block, bad JSON, an unknown tier, a score outside the tier's range, or a missing reply. Builds the Telegram text |
+| Respond to caller | Respond to Webhook (1.4) | `{ok, lead_id, tier, lead_score, language}`: callers are trusted servers holding the secret |
+| Is it hot? | If (2.2) | `tier == "hot"` |
+| Alert sales in Telegram | Telegram (1.2) | Plain text to the sales group; no "sent with n8n" footer |
+
+The respond node sits above the If node, so with execution order v1 the caller gets the answer before the Telegram alert is sent.
 
 ## 4. Claude step
 
@@ -120,8 +137,16 @@ Scores cluster by tier: hot 85–95, warm 45–55, cold 12–28, spam 0–2.
 ## 8. Operations
 
 - `wsl -d Ubuntu -- docker compose up -d` → n8n at http://localhost:5678.
-- A script imports the workflows with `n8n import:workflow` via `docker compose exec`; then activate them in the UI.
-- Workflow changes made in the UI are exported back to `workflows/` and committed.
+- `python -m leadq.n8n deploy` (ADR-8) runs these steps:
+  1. imports the credentials from `.env` through stdin: the webhook secret, the Anthropic key and the Telegram bot token. n8n encrypts them with `N8N_ENCRYPTION_KEY`, and nothing is printed or written to the host disk;
+  2. substitutes the Telegram chat id;
+  3. imports the workflow;
+  4. runs `n8n publish:workflow`;
+  5. restarts n8n so the production webhook is registered.
+
+  Re-running it updates everything in place: credentials and the workflow keep fixed ids.
+- `python -m leadq.send_test_leads` checks the live webhook. A request without the secret, or with a wrong one, must get 403. Then labelled leads are sent and their tiers checked.
+- Workflow changes made in the UI are exported back to `workflows/` (`n8n export:workflow --id=leadqLeadIntake1`). Code changes go into `workflows/code/*.js` and `sync`, never into the Code node in the UI.
 
 ## 9. Decisions
 
@@ -133,6 +158,9 @@ Scores cluster by tier: hot 85–95, warm 45–55, cold 12–28, spam 0–2.
 | ADR-4 | Drafts, never auto-send | A person stays in the loop for anything sent to a customer |
 | ADR-5 | Tier first, then a score inside the tier's fixed range, checked after parsing | Structured outputs can't enforce `minimum`/`maximum`, and a free 0–100 score drifts between runs. Ordering `tier` before `lead_score` and stating the ranges makes the score consistent with the tier, and the range check catches the rest. Trade-off: the score only ranks leads within a tier |
 | ADR-6 | Python tooling as the package `src/leadq/` instead of loose `tools/*.py` scripts | One importable request builder (`leadq.qualify`) shared by the eval, the sync script and the tests. Trade-off: none worth noting |
+| ADR-7 | Code-node JavaScript lives in `workflows/code/*.js`, with constants (model, prompt, schema, tier ranges) generated from the Python sources | The prompt and schema have one source of truth. The JS runs under Node.js in the tests, which assert that it builds a request identical to the evaluated Python request and that it rejects every bad answer. So the eval result holds for the workflow. Trade-off: two implementations of the lead message, kept equal by the tests |
+| ADR-8 | Deploy with the n8n CLI (`import:credentials`, `import:workflow`, `publish:workflow`) inside the container, instead of clicking through the UI or using the REST API | One repeatable command, and no extra n8n API key. Secrets go from `.env` straight into n8n's encrypted store. Trade-off: needs shell access to the container and a restart to register webhooks |
+| ADR-9 | Duplicates are handled by the Google Sheets step (append or update by email or phone), not by a separate check before Claude | A returning lead with a new message deserves re-qualification, so a duplicate updates its row instead of being dropped. Trade-off: a double-submitted form costs a second Claude call (about $0.016) |
 
 ## 10. Extensions (offer as add-ons)
 

@@ -23,3 +23,11 @@ class Settings(BaseSettings):
     webhook_url: str = "http://localhost:5678/webhook/lead-intake"
     # Shared secret the website sends in the X-Webhook-Secret header.
     webhook_secret: SecretStr | None = None
+
+    # Hot-lead alerts. `leadq.n8n deploy` copies the token into n8n's credential store
+    # and the chat id into the workflow; neither is committed.
+    telegram_bot_token: SecretStr | None = None
+    telegram_chat_id: int | None = None
+
+    # How to reach Docker Compose from this machine, e.g. "wsl -d Ubuntu -- docker compose".
+    compose_command: str = "docker compose"

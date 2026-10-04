@@ -16,6 +16,11 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run python -m leadq.n8n sync --check
+      # The Code-node tests run the workflow's JavaScript in Node.js.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
       # Job logs need repo admin rights to download, so the summary and every failure
       # are also published as annotations, which the public API returns.
       - name: pytest
