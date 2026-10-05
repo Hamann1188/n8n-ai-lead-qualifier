@@ -146,8 +146,8 @@ Borderline leads list an accepted neighbouring tier (`alt`). Each lead lists the
 | Tier accuracy (expected or an accepted neighbour) | ≥ 85% | 100% (exact tier: 100%) |
 | Hot lead classified as cold or spam | 0 | 0 |
 | Language detected correctly | ≥ 95% | 100% |
-| Contact details extracted | ≥ 95% | 100% (40 checks) |
-| Injection checks | 100% | 100% (3 checks) |
+| Contact details extracted | ≥ 95% | 100% (37 checks) |
+| Injection checks | 100% | 100% (4 checks) |
 | Cost per lead | reported | $0.016 ($0.65 per run), median 4.9 s |
 
 The prompt was written once and not tuned against these leads, so the result isn't overfitted to the set. All 40 outputs, including every suggested reply, were read by hand:

@@ -1,5 +1,5 @@
 // "Build Claude request": normalize the posted lead and build the Messages API body.
-// Mirrors leadq/qualify.py (lead_message, build_request); tests/test_workflow_code.py
+// Mirrors leadq/qualify.py (lead_message, build_request); tests/test_workflow.py
 // checks that both produce the same request.
 
 const LIMITS = { field: 200, message: 5000 };

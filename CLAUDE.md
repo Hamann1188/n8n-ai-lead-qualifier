@@ -88,6 +88,8 @@ Each step is one commit; tick it off in Status.
 - [x] 4 Credentials guide (2026-10-04): `docs/setup-credentials.md`. The owner followed the Google part from it (project, 3 APIs, consent screen, OAuth client, two n8n credentials, sheet id), and deploy then enabled both Google nodes
 - [x] 5 Error workflow (2026-10-04):
   - "Error alert" (Error Trigger → Format alert → Telegram); "Lead intake" names it as its error workflow; deploy imports and publishes both; 74 tests;
-  - live check: with a wrong Anthropic key the webhook answered 500 and the alert run succeeded (executions 16–17); the real key was restored and checked (execution 18);
+  - live check: with a wrong Anthropic key the webhook answered 500 and the alert run succeeded (executions 16–17); the real key was restored and checked (execution 18). Then the owner retried the failed run from the UI ("Retry with original workflow"): execution 19 (`retryOf` 16) succeeded, so a failed lead isn't lost. In n8n 2.41 the retry control is an unlabelled ↪ icon at the top right of the execution preview (tooltip "Retry execution"), also available via Ctrl+K → "retry";
   - found on the way: n8n 2.41 only runs a published error workflow, and the Telegram node defaults to Markdown, which broke on the `_` in a hint. Both Telegram nodes now send escaped HTML (ADR-11).
-- [ ] 6 README and video
+- [ ] 6 README and video (2026-10-05), partly done:
+  - README written; it is committed together with its four screenshots in `docs/images/`, which the owner takes from the live system (`workflow.png`, `telegram.png`, `sheet.png`, `gmail-draft.png`). Check each one for personal data (the owner's email or avatar) before committing;
+  - video script: `../demo-videos/n8n-ai-lead-qualifier.md`; the owner records it, then a link goes under the README intro.
