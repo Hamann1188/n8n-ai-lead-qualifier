@@ -10,6 +10,10 @@
 
 Then hot leads ping the sales team in Telegram, every lead lands in Google Sheets, and leads with an email get a Gmail draft for a person to review and send.
 
+**▶ Watch the 90-second demo:**
+
+[![Demo video: three leads qualified by Claude, a Telegram alert, the Google Sheets log and a Gmail draft](https://img.youtube.com/vi/qYkbc013J84/maxresdefault.jpg)](https://youtu.be/qYkbc013J84)
+
 <!-- screenshot pending
 <img src="docs/images/workflow.png" alt="The Lead intake workflow in n8n">
 -->
