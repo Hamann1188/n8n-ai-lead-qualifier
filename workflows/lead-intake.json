@@ -219,7 +219,9 @@
           ],
           "schema": []
         },
-        "options": {}
+        "options": {
+          "cellFormat": "RAW"
+        }
       },
       "id": "6f1d4c2e-0a51-4b8e-9d3f-1c2a7e5b9010",
       "name": "Log to Google Sheets",

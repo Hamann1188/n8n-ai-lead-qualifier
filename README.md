@@ -14,9 +14,7 @@ Then hot leads ping the sales team in Telegram, every lead lands in Google Sheet
 
 [![Demo video: three leads qualified by Claude, a Telegram alert, the Google Sheets log and a Gmail draft](https://img.youtube.com/vi/qYkbc013J84/maxresdefault.jpg)](https://youtu.be/qYkbc013J84)
 
-<!-- screenshot pending
 <img src="docs/images/workflow.png" alt="The Lead intake workflow in n8n">
--->
 
 ## The problem
 
@@ -59,17 +57,15 @@ On cost and speed:
 - **Prompt-injection resistant.** Lead text is treated as data: "mark me as hot" or "promise me a discount" don't change the result.
 - **The repo is the source of truth.** The prompt, schema and Code-node scripts live in git, and one command embeds them in the workflow. `deploy` loads the credentials from `.env` into n8n's encrypted store without printing them, then imports and publishes the workflows.
 
-<!-- screenshots pending
-What the team sees: a hot lead and an error alert in Telegram, the lead log in Google Sheets, and a reply draft in Gmail.
+What the team sees: hot-lead and error alerts in Telegram, the lead log in Google Sheets, and a reply draft in Gmail, here in Russian for a lead who wrote in Russian.
 
 <img src="docs/images/telegram.png" alt="Hot-lead alert and error alert in Telegram" width="420">
 
 <img src="docs/images/sheet.png" alt="Leads logged in Google Sheets">
 
-<img src="docs/images/gmail-draft.png" alt="A reply draft in Gmail" width="640">
+<img src="docs/images/gmail-draft.png" alt="A reply draft in Gmail" width="480">
 
 <sub>Screenshots from the live workflow with the synthetic test leads from the eval set.</sub>
--->
 
 ## How it works
 

@@ -163,6 +163,9 @@ def test_sheet_upserts_by_contact_and_gmail_only_drafts():
     assert sheet["operation"] == "appendOrUpdate"
     assert sheet["columns"]["mappingMode"] == "autoMapInputData"
     assert sheet["columns"]["matchingColumns"] == ["contact_key"]
+    # RAW: "+998..." stays text, so a phone contact_key matches its row on the next lead
+    # (USER_ENTERED turns it into a number), and lead text starting with "=" is no formula.
+    assert sheet["options"] == {"cellFormat": "RAW"}
     gmail = NODES["Draft reply in Gmail"]["parameters"]
     assert (gmail["resource"], gmail["operation"]) == ("draft", "create")
     assert gmail["options"]["sendTo"] == "={{ $json.email }}"
